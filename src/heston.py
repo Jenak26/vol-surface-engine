@@ -106,6 +106,51 @@ def heston_iv(S: float, K: float, T: float, r: float,
     return implied_vol(price, S, K, T, r, 'call')
 
 
+def heston_delta(S: float, K: float, T: float, r: float,
+                 kappa: float, theta: float, sigma_v: float,
+                 rho: float, v0: float,
+                 option_type: str = 'call',
+                 dS_pct: float = 0.005) -> float:
+    """
+    Heston delta via central finite difference (bump-and-reprice).
+    dS_pct: bump size as fraction of spot (default 0.5%).
+    """
+    dS = S * dS_pct
+    p_up = heston_price(S + dS, K, T, r, kappa, theta, sigma_v, rho, v0, option_type)
+    p_dn = heston_price(S - dS, K, T, r, kappa, theta, sigma_v, rho, v0, option_type)
+    return float((p_up - p_dn) / (2.0 * dS))
+
+
+def heston_vega(S: float, K: float, T: float, r: float,
+                kappa: float, theta: float, sigma_v: float,
+                rho: float, v0: float,
+                option_type: str = 'call',
+                dv: float = 1e-4) -> float:
+    """
+    Heston vega: sensitivity to initial variance v0, via central bump.
+    Note: this is ∂C/∂v0, not ∂C/∂σ_imp — divide by 2√v0 for the latter.
+    """
+    p_up = heston_price(S, K, T, r, kappa, theta, sigma_v, rho, v0 + dv, option_type)
+    p_dn = heston_price(S, K, T, r, kappa, theta, sigma_v, rho, v0 - dv, option_type)
+    return float((p_up - p_dn) / (2.0 * dv))
+
+
+def heston_theta(S: float, K: float, T: float, r: float,
+                 kappa: float, theta: float, sigma_v: float,
+                 rho: float, v0: float,
+                 option_type: str = 'call',
+                 dt: float = 1.0 / 365.0) -> float:
+    """
+    Heston theta: daily price decay (negative = time decay).
+    Uses a one-day forward difference: θ ≈ P(T - dt) - P(T).
+    """
+    if T <= dt:
+        return 0.0
+    p_now = heston_price(S, K, T, r, kappa, theta, sigma_v, rho, v0, option_type)
+    p_later = heston_price(S, K, T - dt, r, kappa, theta, sigma_v, rho, v0, option_type)
+    return float(p_later - p_now)
+
+
 def calibrate_heston(log_moneyness: np.ndarray, market_ivs: np.ndarray,
                      T: float, S: float, r: float) -> tuple[dict, float]:
     """

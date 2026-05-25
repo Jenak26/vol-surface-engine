@@ -14,6 +14,22 @@ def _svi_total_variance(k: np.ndarray, a: float, b: float, rho: float,
     return a + b * (rho * (k - m) + np.sqrt((k - m) ** 2 + sigma ** 2))
 
 
+def _svi_dw_dk(k: np.ndarray, a: float, b: float, rho: float,
+               m: float, sigma: float) -> np.ndarray:
+    """∂w/∂k for SVI total variance (analytical)."""
+    z = k - m
+    sqrt_term = np.sqrt(z ** 2 + sigma ** 2)
+    return b * (rho + z / sqrt_term)
+
+
+def _svi_d2w_dk2(k: np.ndarray, a: float, b: float, rho: float,
+                 m: float, sigma: float) -> np.ndarray:
+    """∂²w/∂k² for SVI total variance (analytical)."""
+    z = k - m
+    sqrt_term = np.sqrt(z ** 2 + sigma ** 2)
+    return b * sigma ** 2 / sqrt_term ** 3
+
+
 def _fit_svi_slice(log_moneyness: np.ndarray, total_var: np.ndarray) -> np.ndarray:
     """
     Fit SVI parameters to a single expiry slice via least-squares.
@@ -96,3 +112,72 @@ class VolatilitySurface:
             [self.get_iv(k, T) for k in moneyness_grid]
             for T in T_grid
         ])
+
+    def check_calendar_arbitrage(self, n_points: int = 200) -> dict:
+        """
+        Static no-arbitrage check: calendar spread.
+
+        A vol surface is calendar-spread arbitrage-free iff total variance
+        w(k, T) is non-decreasing in T for every k.  Checks on a dense
+        log-moneyness grid across all adjacent expiry pairs.
+
+        Returns
+        -------
+        dict with keys:
+            calendar_arbitrage_free : bool
+            violations : list of (T_lo, T_hi, n_violations) tuples
+        """
+        k_grid = np.linspace(-0.30, 0.30, n_points)
+        violations = []
+        for i in range(len(self._T_vals) - 1):
+            T_lo, T_hi = self._T_vals[i], self._T_vals[i + 1]
+            w_lo = _svi_total_variance(k_grid, *self._slices[T_lo])
+            w_hi = _svi_total_variance(k_grid, *self._slices[T_hi])
+            n_viol = int(np.sum(w_lo > w_hi + 1e-8))
+            if n_viol > 0:
+                violations.append((float(T_lo), float(T_hi), n_viol))
+        return {
+            'calendar_arbitrage_free': len(violations) == 0,
+            'violations': violations,
+        }
+
+    def check_butterfly_arbitrage(self, n_points: int = 200) -> dict:
+        """
+        Static no-arbitrage check: butterfly (convexity).
+
+        Gatheral (2006): a smile slice is butterfly-arbitrage-free iff
+            g(k) = (1 - k·w'/(2w))² - (w')²/4·(1/w + 1/4) + w''/2 > 0
+
+        for all k, where w' = ∂w/∂k and w'' = ∂²w/∂k².
+
+        Returns
+        -------
+        dict with keys:
+            butterfly_arbitrage_free : bool  (True iff ALL slices pass)
+            fraction_valid           : float  fraction of (T, k) grid points where g > 0
+            per_slice                : dict mapping T → fraction_valid for that slice
+        """
+        k_grid = np.linspace(-0.30, 0.30, n_points)
+        per_slice: dict[float, float] = {}
+        total_pts = 0
+        valid_pts = 0
+
+        for T_val, params in self._slices.items():
+            w = _svi_total_variance(k_grid, *params)
+            wk = _svi_dw_dk(k_grid, *params)
+            wkk = _svi_d2w_dk2(k_grid, *params)
+
+            A = 1.0 - k_grid * wk / (2.0 * np.maximum(w, 1e-12))
+            g = A ** 2 - (wk ** 2 / 4.0) * (1.0 / np.maximum(w, 1e-12) + 0.25) + wkk / 2.0
+
+            n_valid = int(np.sum(g > 0))
+            per_slice[float(T_val)] = n_valid / n_points
+            valid_pts += n_valid
+            total_pts += n_points
+
+        fraction = valid_pts / total_pts if total_pts > 0 else 0.0
+        return {
+            'butterfly_arbitrage_free': fraction == 1.0,
+            'fraction_valid': round(fraction, 4),
+            'per_slice': {round(T, 6): round(f, 4) for T, f in per_slice.items()},
+        }

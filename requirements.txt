@@ -34,3 +34,10 @@ scikit-learn>=1.3.0
 
 # Progress bars for MC simulations
 tqdm>=4.65.0
+
+# REST API
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# API testing
+httpx>=0.27.0
