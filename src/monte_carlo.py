@@ -1,4 +1,5 @@
 import numpy as np
+from src.black_scholes import bs_price
 
 
 def simulate_gbm_paths(S: float, T: float, r: float, sigma: float,
@@ -31,3 +32,47 @@ def mc_european(S: float, K: float, T: float, r: float, sigma: float,
     else:
         payoffs = np.maximum(K - ST, 0.0)
     return float(np.exp(-r * T) * np.mean(payoffs))
+
+
+def mc_antithetic(S: float, K: float, T: float, r: float, sigma: float,
+                  option_type: str = 'call', n_sims: int = 100_000,
+                  seed: int = 42) -> float:
+    """
+    European MC with antithetic variates.
+    Uses n_sims/2 pairs (Z, -Z) so total path count equals n_sims.
+    """
+    half = n_sims // 2
+    rng = np.random.default_rng(seed)
+    Z = rng.standard_normal(half)
+    log_drift = (r - 0.5 * sigma ** 2) * T
+    ST_pos = S * np.exp(log_drift + sigma * np.sqrt(T) * Z)
+    ST_neg = S * np.exp(log_drift - sigma * np.sqrt(T) * Z)
+    if option_type == 'call':
+        payoffs = 0.5 * (np.maximum(ST_pos - K, 0.0) + np.maximum(ST_neg - K, 0.0))
+    else:
+        payoffs = 0.5 * (np.maximum(K - ST_pos, 0.0) + np.maximum(K - ST_neg, 0.0))
+    return float(np.exp(-r * T) * np.mean(payoffs))
+
+
+def mc_control_variate(S: float, K: float, T: float, r: float, sigma: float,
+                       option_type: str = 'call', n_sims: int = 100_000,
+                       seed: int = 42) -> float:
+    """
+    European MC with control variate.
+    Control: discounted terminal stock price (mean = S analytically).
+    beta is estimated from the sample covariance.
+    """
+    rng = np.random.default_rng(seed)
+    Z = rng.standard_normal(n_sims)
+    ST = S * np.exp((r - 0.5 * sigma ** 2) * T + sigma * np.sqrt(T) * Z)
+    if option_type == 'call':
+        payoffs = np.maximum(ST - K, 0.0)
+    else:
+        payoffs = np.maximum(K - ST, 0.0)
+    discounted_ST = np.exp(-r * T) * ST
+    # Optimal beta minimises variance of (payoff - beta * control)
+    control = discounted_ST - S  # zero-mean: E[discounted_ST] = S
+    cov_matrix = np.cov(np.exp(-r * T) * payoffs, control)
+    beta = cov_matrix[0, 1] / cov_matrix[1, 1]
+    adjusted = np.exp(-r * T) * payoffs - beta * control
+    return float(np.mean(adjusted))

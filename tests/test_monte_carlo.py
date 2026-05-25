@@ -1,11 +1,12 @@
 import pytest
 import numpy as np
-from src.monte_carlo import simulate_gbm_paths, mc_european
+from src.monte_carlo import simulate_gbm_paths, mc_european, mc_antithetic, mc_control_variate
 from src.black_scholes import bs_price
 
 S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.20
 BS_CALL = 10.4506
 BS_PUT  = 5.5735
+N_SIMS = 100_000  # same budget for fair comparison
 
 class TestGBMPaths:
     def test_paths_shape(self):
@@ -39,3 +40,27 @@ class TestEuropeanMC:
         call = mc_european(S, K, T, r, sigma, 'call', n_sims=500_000, seed=42)
         put  = mc_european(S, K, T, r, sigma, 'put',  n_sims=500_000, seed=42)
         assert abs((call - put) - (S - K * np.exp(-r * T))) < 0.30
+
+class TestVarianceReduction:
+    def test_antithetic_tighter_than_naive(self):
+        # Run 30 trials, compare standard deviations of price estimates
+        naive_prices = [mc_european(S, K, T, r, sigma, 'call', n_sims=N_SIMS, seed=i)
+                        for i in range(30)]
+        anti_prices  = [mc_antithetic(S, K, T, r, sigma, 'call', n_sims=N_SIMS, seed=i)
+                        for i in range(30)]
+        assert np.std(anti_prices) < np.std(naive_prices)
+
+    def test_antithetic_call_close_to_bs(self):
+        price = mc_antithetic(S, K, T, r, sigma, 'call', n_sims=N_SIMS, seed=42)
+        assert abs(price - BS_CALL) < 0.10
+
+    def test_control_variate_call_close_to_bs(self):
+        price = mc_control_variate(S, K, T, r, sigma, 'call', n_sims=N_SIMS, seed=42)
+        assert abs(price - BS_CALL) < 0.08
+
+    def test_control_variate_tighter_than_antithetic(self):
+        cv_prices   = [mc_control_variate(S, K, T, r, sigma, 'call', n_sims=N_SIMS, seed=i)
+                       for i in range(30)]
+        anti_prices = [mc_antithetic(S, K, T, r, sigma, 'call', n_sims=N_SIMS, seed=i)
+                       for i in range(30)]
+        assert np.std(cv_prices) < np.std(anti_prices)
