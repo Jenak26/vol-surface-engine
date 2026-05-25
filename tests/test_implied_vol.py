@@ -2,6 +2,8 @@ import pytest
 import numpy as np
 from src.implied_vol import implied_vol
 from src.black_scholes import bs_price
+from data.fetcher import fetch_nse_option_chain, _generate_synthetic_chain
+from data.preprocessor import clean_option_chain
 
 S, K, T, r = 100.0, 100.0, 1.0, 0.05
 
@@ -43,3 +45,32 @@ class TestImpliedVol:
         iv_low  = implied_vol(price_low,  S, K, T, r, 'call')
         iv_high = implied_vol(price_high, S, K, T, r, 'call')
         assert iv_high > iv_low
+
+
+class TestDataPipeline:
+    def test_synthetic_chain_has_expected_columns(self):
+        df = _generate_synthetic_chain()
+        for col in ['strike', 'expiry', 'option_type', 'last_price', 'iv', 'spot', 'T', 'r']:
+            assert col in df.columns, f"Missing column: {col}"
+
+    def test_synthetic_chain_nonempty(self):
+        df = _generate_synthetic_chain()
+        assert len(df) > 0
+
+    def test_clean_removes_zero_price_rows(self):
+        df = _generate_synthetic_chain()
+        spot = df['spot'].iloc[0]
+        r    = df['r'].iloc[0]
+        df.loc[0, 'last_price'] = 0.0
+        df.loc[0, 'bid'] = 0.0
+        df.loc[0, 'ask'] = 0.0
+        cleaned = clean_option_chain(df, spot=spot, r=r, min_oi=0, min_volume=0)
+        assert len(cleaned) < len(df)
+
+    def test_clean_adds_computed_iv(self):
+        df = _generate_synthetic_chain()
+        spot = df['spot'].iloc[0]
+        r    = df['r'].iloc[0]
+        cleaned = clean_option_chain(df, spot=spot, r=r, min_oi=0, min_volume=0)
+        assert 'computed_iv' in cleaned.columns
+        assert cleaned['computed_iv'].notna().all()
