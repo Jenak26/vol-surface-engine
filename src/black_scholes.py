@@ -92,3 +92,25 @@ def rho(S: float, K: float, T: float, r: float, sigma: float,
     if option_type == 'call':
         return K * T * np.exp(-r * T) * norm.cdf(d2) / 100.0
     return -K * T * np.exp(-r * T) * norm.cdf(-d2) / 100.0
+
+
+def numerical_delta(S: float, K: float, T: float, r: float, sigma: float,
+                    option_type: str = 'call', dS: float = 0.01) -> float:
+    """Central difference approximation of delta."""
+    return (bs_price(S + dS, K, T, r, sigma, option_type) -
+            bs_price(S - dS, K, T, r, sigma, option_type)) / (2 * dS)
+
+
+def numerical_gamma(S: float, K: float, T: float, r: float, sigma: float,
+                    option_type: str = 'call', dS: float = 0.01) -> float:
+    """Central difference approximation of gamma."""
+    return (bs_price(S + dS, K, T, r, sigma, option_type)
+            - 2 * bs_price(S, K, T, r, sigma, option_type)
+            + bs_price(S - dS, K, T, r, sigma, option_type)) / (dS ** 2)
+
+
+def numerical_vega(S: float, K: float, T: float, r: float, sigma: float,
+                   option_type: str = 'call', d_sigma: float = 0.0001) -> float:
+    """Central difference approximation of vega (per 1% vol change)."""
+    return (bs_price(S, K, T, r, sigma + d_sigma, option_type) -
+            bs_price(S, K, T, r, sigma - d_sigma, option_type)) / (2 * d_sigma * 100)

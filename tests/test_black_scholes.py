@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from src.black_scholes import bs_price, delta, gamma, vega, theta, rho
+from src.black_scholes import bs_price, delta, gamma, vega, theta, rho, numerical_delta, numerical_gamma, numerical_vega
 
 S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.20
 
@@ -78,3 +78,25 @@ class TestAnalyticalGreeks:
 
     def test_rho_put_negative(self):
         assert rho(S, K, T, r, sigma, 'put') < 0
+
+
+class TestNumericalGreeks:
+    def test_numerical_delta_matches_analytical(self):
+        analytical = delta(S, K, T, r, sigma, 'call')
+        numerical  = numerical_delta(S, K, T, r, sigma, 'call')
+        assert abs(analytical - numerical) < 1e-4
+
+    def test_numerical_gamma_matches_analytical(self):
+        analytical = gamma(S, K, T, r, sigma)
+        numerical  = numerical_gamma(S, K, T, r, sigma)
+        assert abs(analytical - numerical) < 1e-4
+
+    def test_numerical_vega_matches_analytical(self):
+        analytical = vega(S, K, T, r, sigma)
+        numerical  = numerical_vega(S, K, T, r, sigma)
+        assert abs(analytical - numerical) < 1e-3
+
+    def test_numerical_put_delta_matches_analytical(self):
+        analytical = delta(S, K, T, r, sigma, 'put')
+        numerical  = numerical_delta(S, K, T, r, sigma, 'put')
+        assert abs(analytical - numerical) < 1e-4
