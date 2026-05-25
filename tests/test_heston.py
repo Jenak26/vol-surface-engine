@@ -14,7 +14,7 @@ class TestHestonPricing:
         # With sigma_v≈0 and rho=0, Heston ≈ BS (vol ≈ constant at sqrt(theta))
         h_price = heston_price(S, K, T, r, **FLAT_PARAMS, option_type='call')
         bs = bs_price(S, K, T, r, 0.20, 'call')  # sqrt(0.04) = 0.20
-        assert abs(h_price - bs) < 0.20  # generous tolerance given numerical integration
+        assert abs(h_price - bs) < 1e-3  # tight tolerance made possible by stable branch-cut-free characteristic function
 
     def test_heston_call_positive(self):
         params = {'kappa': 1.5, 'theta': 0.04, 'sigma_v': 0.3, 'rho': -0.5, 'v0': 0.04}

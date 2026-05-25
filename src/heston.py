@@ -13,6 +13,9 @@ def _heston_cf_j(phi: complex, S: float, T: float, r: float,
     Heston (1993) auxiliary characteristic functions for the two risk-neutral
     probabilities P1 (stock-numeraire) and P2 (money-market-numeraire).
 
+    Uses the branch-cut-free stable formulation (Gatheral 2006, Albrecher 2007)
+    which uses e^(-d*T) instead of e^(d*T) to prevent exponential overflow.
+
     j=1: uses u=+0.5, b=kappa-rho*sigma_v  (stock measure)
     j=2: uses u=-0.5, b=kappa               (risk-neutral / money-market measure)
 
@@ -27,17 +30,21 @@ def _heston_cf_j(phi: complex, S: float, T: float, r: float,
         b = kappa
 
     a = kappa * theta
-    d = np.sqrt((rho * sigma_v * i * phi - b) ** 2
+    d = np.sqrt((b - rho * sigma_v * i * phi) ** 2
                 - sigma_v ** 2 * (2 * u * i * phi - phi ** 2))
-    g = (b - rho * sigma_v * i * phi + d) / (b - rho * sigma_v * i * phi - d)
+    
+    # Stable Gatheral formulation: g has -d in numerator, +d in denominator
+    g = (b - rho * sigma_v * i * phi - d) / (b - rho * sigma_v * i * phi + d)
 
-    exp_dT = np.exp(d * T)
+    # Use exp(-d*T) to avoid overflow (since Re(d) >= 0)
+    exp_neg_dT = np.exp(-d * T)
+    
     C = r * i * phi * T + (a / sigma_v ** 2) * (
-        (b - rho * sigma_v * i * phi + d) * T
-        - 2 * np.log((1 - g * exp_dT) / (1 - g))
+        (b - rho * sigma_v * i * phi - d) * T
+        - 2 * np.log((1 - g * exp_neg_dT) / (1 - g))
     )
-    D = ((b - rho * sigma_v * i * phi + d) / sigma_v ** 2) * (
-        (1 - exp_dT) / (1 - g * exp_dT)
+    D = ((b - rho * sigma_v * i * phi - d) / sigma_v ** 2) * (
+        (1 - exp_neg_dT) / (1 - g * exp_neg_dT)
     )
     return np.exp(C + D * v0 + i * phi * np.log(S))
 
@@ -156,7 +163,9 @@ def calibrate_heston(log_moneyness: np.ndarray, market_ivs: np.ndarray,
     """
     Calibrate Heston parameters to a single expiry slice.
 
-    Minimises RMSE between Heston-implied vols and market implied vols.
+    Uses Vega-weighted price errors as a fast proxy for volatility distance,
+    completely eliminating the slow Newton-Raphson implied vol solver loop
+    from the inner optimization.
 
     Parameters
     ----------
@@ -169,25 +178,42 @@ def calibrate_heston(log_moneyness: np.ndarray, market_ivs: np.ndarray,
     Returns
     -------
     params: dict with keys kappa, theta, sigma_v, rho, v0
-    rmse  : root mean squared error in vol units
+    rmse  : root mean squared error in vol units (calculated at the optimal parameters)
     """
+    from src.black_scholes import vega as bs_vega
+
     F = S * np.exp(r * T)
     strikes = F * np.exp(log_moneyness)
+
+    # Pre-calculate market prices and Vegas to avoid redundant BS calls
+    mkt_prices = []
+    vegas = []
+    for K_i, iv_mkt in zip(strikes, market_ivs):
+        # Calibrate using call option prices
+        p_mkt = bs_price(S, K_i, T, r, iv_mkt, 'call')
+        # bs_vega() returns vega per 1% vol, multiply by 100 to get dC/dVol
+        v_mkt = bs_vega(S, K_i, T, r, iv_mkt) * 100.0
+        mkt_prices.append(p_mkt)
+        vegas.append(max(v_mkt, 1e-4))  # floor vega to avoid division by zero
 
     def objective(x):
         kappa, theta, sigma_v, rho, v0 = x
         if kappa <= 0 or theta <= 0 or sigma_v <= 0 or abs(rho) >= 1 or v0 <= 0:
             return 1e6
-        # Feller condition: 2*kappa*theta > sigma_v^2 ensures variance stays positive
+        # Soft Feller condition: 2*kappa*theta > sigma_v^2 is desirable but often
+        # violated in market fits. We allow it but can penalise if needed.
+        # We keep the check here if Feller was required in the original code, but
+        # relaxed so it doesn't penalise reasonable fits.
+        # Let's keep the original check for compatibility:
         if 2 * kappa * theta < sigma_v ** 2:
             return 1e6
+            
         errors = []
-        for K_i, iv_mkt in zip(strikes, market_ivs):
-            iv_h = heston_iv(S, K_i, T, r, kappa, theta, sigma_v, rho, v0)
-            if iv_h is None:
-                errors.append(0.10)  # penalise non-convergence
-            else:
-                errors.append(iv_h - iv_mkt)
+        for K_i, p_mkt, v_mkt in zip(strikes, mkt_prices, vegas):
+            # Direct Fourier pricing under Heston (no IV root-finding)
+            p_h = heston_price(S, K_i, T, r, kappa, theta, sigma_v, rho, v0, 'call')
+            # Volatility error proxy: dVol ≈ dC / Vega
+            errors.append((p_h - p_mkt) / v_mkt)
         return float(np.sqrt(np.mean(np.array(errors) ** 2)))
 
     atm_var = float(np.mean(market_ivs ** 2))
@@ -200,4 +226,15 @@ def calibrate_heston(log_moneyness: np.ndarray, market_ivs: np.ndarray,
     kappa, theta, sigma_v, rho, v0 = result.x
     params = {'kappa': float(kappa), 'theta': float(theta),
               'sigma_v': float(sigma_v), 'rho': float(rho), 'v0': float(v0)}
-    return params, float(result.fun)
+              
+    # Compute the final true implied vol RMSE at the optimal parameters
+    final_errors = []
+    for K_i, iv_mkt in zip(strikes, market_ivs):
+        iv_h = heston_iv(S, K_i, T, r, kappa, theta, sigma_v, rho, v0)
+        if iv_h is None:
+            final_errors.append(0.10)
+        else:
+            final_errors.append(iv_h - iv_mkt)
+    final_rmse = float(np.sqrt(np.mean(np.array(final_errors) ** 2)))
+
+    return params, final_rmse

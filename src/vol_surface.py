@@ -32,7 +32,8 @@ def _svi_d2w_dk2(k: np.ndarray, a: float, b: float, rho: float,
 
 def _fit_svi_slice(log_moneyness: np.ndarray, total_var: np.ndarray) -> np.ndarray:
     """
-    Fit SVI parameters to a single expiry slice via least-squares.
+    Fit SVI parameters to a single expiry slice via least-squares,
+    penalising parameter sets that violate butterfly arbitrage.
     Returns [a, b, rho, m, sigma].
     """
     def objective(params):
@@ -42,7 +43,21 @@ def _fit_svi_slice(log_moneyness: np.ndarray, total_var: np.ndarray) -> np.ndarr
         w_fit = _svi_total_variance(log_moneyness, a, b, rho, m, sigma)
         if np.any(w_fit <= 0):
             return 1e10
-        return float(np.sum((w_fit - total_var) ** 2))
+        
+        # Penalise butterfly arbitrage (g < 0) on a dense log-moneyness grid
+        k_check = np.linspace(-0.4, 0.4, 30)
+        w = _svi_total_variance(k_check, a, b, rho, m, sigma)
+        wk = _svi_dw_dk(k_check, a, b, rho, m, sigma)
+        wkk = _svi_d2w_dk2(k_check, a, b, rho, m, sigma)
+        
+        w_safe = np.maximum(w, 1e-12)
+        A = 1.0 - k_check * wk / (2.0 * w_safe)
+        g = A ** 2 - (wk ** 2 / 4.0) * (1.0 / w_safe + 0.25) + wkk / 2.0
+        
+        violations = np.sum(np.maximum(-g, 0.0))
+        penalty = 1e4 * violations
+        
+        return float(np.sum((w_fit - total_var) ** 2)) + penalty
 
     near_atm = total_var[np.abs(log_moneyness) < 0.05]
     if len(near_atm) == 0:
@@ -59,8 +74,9 @@ class VolatilitySurface:
     """
     Implied volatility surface fitted from market option prices.
 
-    Fits SVI parametrization per expiry slice, then linearly interpolates
-    total variance between slices for arbitrary (T, k) queries.
+    Fits SVI parametrization per expiry slice, then uses a natural cubic spline
+    in the time dimension to interpolate total variance, ensuring C2 smoothness
+    and exact analytical time derivatives.
     """
 
     def __init__(self, df: pd.DataFrame, spot: float, r: float):
@@ -80,30 +96,53 @@ class VolatilitySurface:
             self._slices[float(T_val)] = params
         self._T_vals = np.array(sorted(self._slices.keys()))
 
-    def get_iv(self, log_moneyness: float, T: float) -> float:
-        """Interpolated implied vol at arbitrary (log_moneyness, T)."""
+    def get_total_variance_and_derivative(self, log_moneyness: float, T: float) -> tuple[float, float]:
+        """
+        Returns (total_variance, dw_dT) at (log_moneyness, T) using a natural cubic spline
+        in the time dimension to ensure C2 smoothness and exact analytical time derivatives.
+        """
         k = np.array([log_moneyness])
         T = float(T)
 
-        if T <= self._T_vals[0]:
-            params = self._slices[self._T_vals[0]]
-            w = _svi_total_variance(k, *params)[0]
-            return float(np.sqrt(max(w, 1e-8) / self._T_vals[0]))
+        # If there are fewer than 3 slices, fall back to linear interpolation
+        if len(self._T_vals) < 3:
+            if T <= self._T_vals[0]:
+                w = _svi_total_variance(k, *self._slices[self._T_vals[0]])[0]
+                return float(w), 0.0
+            if T >= self._T_vals[-1]:
+                w = _svi_total_variance(k, *self._slices[self._T_vals[-1]])[0]
+                return float(w), 0.0
 
-        if T >= self._T_vals[-1]:
-            params = self._slices[self._T_vals[-1]]
-            w = _svi_total_variance(k, *params)[0]
-            return float(np.sqrt(max(w, 1e-8) / self._T_vals[-1]))
+            idx = np.searchsorted(self._T_vals, T) - 1
+            T_lo, T_hi = self._T_vals[idx], self._T_vals[idx + 1]
+            w_lo = _svi_total_variance(k, *self._slices[T_lo])[0]
+            w_hi = _svi_total_variance(k, *self._slices[T_hi])[0]
+            dw_dT = (w_hi - w_lo) / (T_hi - T_lo)
+            w = w_lo + dw_dT * (T - T_lo)
+            return float(w), float(dw_dT)
 
-        # Linear interpolation in total variance between bracketing slices
-        idx = np.searchsorted(self._T_vals, T) - 1
-        T_lo, T_hi = self._T_vals[idx], self._T_vals[idx + 1]
-        alpha = (T - T_lo) / (T_hi - T_lo)
+        # Cubic spline interpolation in time dimension
+        from scipy.interpolate import CubicSpline
+        w_slices = []
+        for T_i in self._T_vals:
+            w_i = _svi_total_variance(k, *self._slices[T_i])[0]
+            w_slices.append(w_i)
 
-        w_lo = _svi_total_variance(k, *self._slices[T_lo])[0]
-        w_hi = _svi_total_variance(k, *self._slices[T_hi])[0]
-        w = (1 - alpha) * w_lo + alpha * w_hi
-        return float(np.sqrt(max(w, 1e-8) / T))
+        # Create natural cubic spline
+        spline = CubicSpline(self._T_vals, w_slices, bc_type='natural')
+
+        w = float(spline(T))
+        dw_dT = float(spline(T, nu=1))
+
+        # Ensure total variance is strictly non-negative
+        w = max(w, 1e-8)
+
+        return w, dw_dT
+
+    def get_iv(self, log_moneyness: float, T: float) -> float:
+        """Interpolated implied vol at arbitrary (log_moneyness, T)."""
+        w, _ = self.get_total_variance_and_derivative(log_moneyness, T)
+        return float(np.sqrt(w / max(T, 1e-8)))
 
     def get_iv_grid(self, moneyness_grid: np.ndarray,
                     T_grid: np.ndarray) -> np.ndarray:

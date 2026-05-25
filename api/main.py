@@ -38,7 +38,16 @@ app = FastAPI(
 )
 
 
+from fastapi.responses import HTMLResponse
+
 # ── Meta ─────────────────────────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def read_root():
+    """Return the premium quantitative pricing dashboard homepage."""
+    with open("api/templates/index.html", "r", encoding="utf-8") as f:
+        return f.read()
+
 
 @app.get("/health", tags=["Meta"])
 def health():

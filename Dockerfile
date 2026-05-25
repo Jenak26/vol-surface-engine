@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 8000
+EXPOSE 7860
 
-# 4 workers; remove --workers flag if deploying to a single-vCPU free tier
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+# Runs uvicorn on port 7860 (Hugging Face default)
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "7860"]
