@@ -36,7 +36,7 @@ The diagram below represents the end-to-end data pipeline and request-response f
 ```mermaid
 flowchart TD
     %% Source Data
-    subgraph Data Layer
+    subgraph Data_Layer ["Data Layer"]
         A[NSE Live Options Chain API] -->|JSON Response| C[Quote Cleaner & Preprocessor]
         B[Synthetic Skew Generator] -->|Offline Fallback| C
     end
@@ -46,7 +46,7 @@ flowchart TD
     D -->|Implied Volatilities & Market Vega| E[Cleaned Options Dataset]
 
     %% Numerical Engines
-    subgraph Quantitative Engine
+    subgraph Quant_Engine ["Quantitative Engine"]
         E -->|Least-Squares Optimization| F[SVI Volatility Surface Model]
         F -->|Arbitrage Constraint Penalty| F
         
@@ -58,7 +58,7 @@ flowchart TD
     end
 
     %% Web Delivery
-    subgraph REST API & UI (FastAPI Container)
+    subgraph REST_API ["REST API & UI (FastAPI Container)"]
         F & G & H -->|REST Endpoints / JSON Data| I[FastAPI Backend Router]
         I -->|HTML Response| J[Glassmorphic Dark-Mode Dashboard]
         I -->|Interactive API Docs| K[Swagger UI /docs]
