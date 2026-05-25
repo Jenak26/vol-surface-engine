@@ -76,3 +76,36 @@ def mc_control_variate(S: float, K: float, T: float, r: float, sigma: float,
     beta = cov_matrix[0, 1] / cov_matrix[1, 1]
     adjusted = np.exp(-r * T) * payoffs - beta * control
     return float(np.mean(adjusted))
+
+
+def mc_asian(S: float, K: float, T: float, r: float, sigma: float,
+             option_type: str = 'call', n_sims: int = 100_000,
+             n_steps: int = 252, seed: int = 42) -> float:
+    """
+    Arithmetic average Asian option via MC.
+    Payoff is based on the average stock price over the path, not terminal price.
+    """
+    paths = simulate_gbm_paths(S, T, r, sigma, n_sims=n_sims, n_steps=n_steps, seed=seed)
+    avg_price = np.mean(paths[:, 1:], axis=1)  # exclude t=0
+    if option_type == 'call':
+        payoffs = np.maximum(avg_price - K, 0.0)
+    else:
+        payoffs = np.maximum(K - avg_price, 0.0)
+    return float(np.exp(-r * T) * np.mean(payoffs))
+
+
+def mc_barrier_down_out(S: float, K: float, T: float, r: float, sigma: float,
+                         barrier: float, n_sims: int = 100_000,
+                         n_steps: int = 252, seed: int = 42) -> float:
+    """
+    Down-and-out barrier call option via MC.
+    Option is knocked out (pays 0) if stock price ever hits the barrier.
+    """
+    if barrier >= S:
+        return 0.0
+    paths = simulate_gbm_paths(S, T, r, sigma, n_sims=n_sims, n_steps=n_steps, seed=seed)
+    min_price = np.min(paths, axis=1)
+    knocked_out = min_price <= barrier
+    ST = paths[:, -1]
+    payoffs = np.where(knocked_out, 0.0, np.maximum(ST - K, 0.0))
+    return float(np.exp(-r * T) * np.mean(payoffs))

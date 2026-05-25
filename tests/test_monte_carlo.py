@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from src.monte_carlo import simulate_gbm_paths, mc_european, mc_antithetic, mc_control_variate
+from src.monte_carlo import simulate_gbm_paths, mc_european, mc_antithetic, mc_control_variate, mc_asian, mc_barrier_down_out
 from src.black_scholes import bs_price
 
 S, K, T, r, sigma = 100.0, 100.0, 1.0, 0.05, 0.20
@@ -64,3 +64,37 @@ class TestVarianceReduction:
         anti_prices = [mc_antithetic(S, K, T, r, sigma, 'call', n_sims=N_SIMS, seed=i)
                        for i in range(30)]
         assert np.std(cv_prices) < np.std(anti_prices)
+
+class TestPathDependentOptions:
+    def test_asian_call_cheaper_than_european_call(self):
+        # Asian (average) call < European call because averaging reduces effective volatility
+        asian    = mc_asian(S, K, T, r, sigma, 'call', n_sims=200_000, seed=42)
+        european = mc_european(S, K, T, r, sigma, 'call', n_sims=200_000, seed=42)
+        assert asian < european
+
+    def test_asian_call_positive(self):
+        assert mc_asian(S, K, T, r, sigma, 'call', n_sims=100_000, seed=42) > 0
+
+    def test_asian_put_positive(self):
+        assert mc_asian(S, K, T, r, sigma, 'put', n_sims=100_000, seed=42) > 0
+
+    def test_barrier_knock_out_below_european(self):
+        # Down-and-out call <= vanilla call (barrier can kill the option)
+        barrier_price  = mc_barrier_down_out(S, K, T, r, sigma,
+                                              barrier=80.0, n_sims=200_000, seed=42)
+        vanilla_price  = mc_european(S, K, T, r, sigma, 'call', n_sims=200_000, seed=42)
+        assert barrier_price <= vanilla_price + 0.01  # small tolerance for MC noise
+
+    def test_barrier_below_spot_activated_lowers_price(self):
+        # Barrier just below spot (90) vs barrier far below (50)
+        close_barrier = mc_barrier_down_out(S, K, T, r, sigma,
+                                             barrier=90.0, n_sims=200_000, seed=42)
+        far_barrier   = mc_barrier_down_out(S, K, T, r, sigma,
+                                             barrier=50.0, n_sims=200_000, seed=42)
+        assert close_barrier < far_barrier  # closer barrier → more likely to knock out
+
+    def test_barrier_above_spot_zero(self):
+        # If barrier ≥ spot, option is immediately knocked out → worthless
+        price = mc_barrier_down_out(S, K, T, r, sigma,
+                                     barrier=100.0, n_sims=10_000, seed=42)
+        assert price < 0.01
