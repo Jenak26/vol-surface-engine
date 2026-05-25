@@ -21,7 +21,9 @@ def fetch_nse_option_chain(symbol: str = 'NIFTY') -> pd.DataFrame:
     if NSE_AVAILABLE:
         try:
             raw = nse_optionchain_scrapper(symbol)
-            return _parse_nse_raw(raw)
+            df = _parse_nse_raw(raw)
+            if len(df) > 0 and 'last_price' in df.columns:
+                return df
         except Exception:
             pass  # fall through to synthetic data
 
