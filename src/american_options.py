@@ -64,3 +64,58 @@ def lsm_american_put(S: float, K: float, T: float, r: float, sigma: float,
         cashflows[~itm] *= discount
 
     return float(discount * np.mean(cashflows))
+
+
+def compute_exercise_boundary(K: float, T: float, r: float, sigma: float,
+                               n_steps: int = 50, n_sims: int = 20_000,
+                               seed: int = 42) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Estimate the early exercise boundary for an American put.
+
+    At each timestep, find the critical stock price S* such that
+    immediate exercise (K - S*) equals the continuation value.
+
+    Returns:
+        times: array of time points (length n_steps)
+        boundary: critical stock prices S*(t) at each time
+    """
+    rng = np.random.default_rng(seed)
+    dt = T / n_steps
+    discount = np.exp(-r * dt)
+
+    half = n_sims // 2
+    Z = rng.standard_normal((half, n_steps))
+    Z_full = np.concatenate([Z, -Z], axis=0)
+
+    paths = np.empty((n_sims, n_steps + 1))
+    paths[:, 0] = K  # start at-the-money
+    for t in range(n_steps):
+        paths[:, t + 1] = paths[:, t] * np.exp(
+            (r - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * Z_full[:, t]
+        )
+
+    cashflows = np.maximum(K - paths[:, -1], 0.0)
+    boundary = np.empty(n_steps)
+
+    for t in range(n_steps - 1, -1, -1):
+        intrinsic = np.maximum(K - paths[:, t], 0.0)
+        itm = intrinsic > 0
+
+        if itm.sum() >= 4:
+            X = paths[itm, t] / K
+            Y = cashflows[itm] * discount
+            basis = _laguerre_basis(X)
+            coeffs, _, _, _ = np.linalg.lstsq(basis, Y, rcond=None)
+            continuation = basis @ coeffs
+            exercise = intrinsic[itm] > continuation
+            # Critical price: highest S where exercise is optimal
+            exercise_prices = paths[itm, t][exercise]
+            boundary[t] = np.max(exercise_prices) if exercise.any() else 0.0
+            cashflows[itm] = np.where(exercise, intrinsic[itm], cashflows[itm] * discount)
+        else:
+            boundary[t] = 0.0
+
+        cashflows[~itm] *= discount
+
+    times = np.linspace(0, T, n_steps)
+    return times, boundary

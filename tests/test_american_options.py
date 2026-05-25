@@ -1,6 +1,7 @@
 import pytest
 import numpy as np
 from src.american_options import lsm_american_put
+from src.american_options import compute_exercise_boundary
 from src.black_scholes import bs_price
 from src.monte_carlo import mc_european
 
@@ -33,3 +34,20 @@ class TestLSMAmerican:
 
     def test_american_put_positive(self):
         assert lsm_american_put(S, K, T, r, sigma, n_sims=10_000, seed=42) > 0
+
+
+class TestExerciseBoundary:
+    def test_boundary_below_strike(self):
+        # Exercise boundary must be below K everywhere (only exercise put when S < K)
+        times, boundary = compute_exercise_boundary(K, T, r, sigma, n_steps=20)
+        assert np.all(boundary <= K + 0.01)
+
+    def test_boundary_increases_toward_maturity(self):
+        # Boundary should approach K as t → T (at expiry, exercise whenever S < K)
+        times, boundary = compute_exercise_boundary(K, T, r, sigma, n_steps=20)
+        # Last few values should be close to K
+        assert boundary[-1] > boundary[0]  # boundary rises toward K
+
+    def test_boundary_length_matches_steps(self):
+        times, boundary = compute_exercise_boundary(K, T, r, sigma, n_steps=20)
+        assert len(times) == len(boundary) == 20
